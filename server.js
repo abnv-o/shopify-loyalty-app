@@ -8,74 +8,64 @@ const shopifyRoutes = require("./routes/shopifyRoutes");
 
 const app = express();
 
-// Explicitly disable proxy trust
-app.set('trust proxy', false);
+// ✅ Set proxy trust explicitly for Vercel (Important)
+app.set('trust proxy', 1);
 
-// Middleware to remove X-Forwarded headers if they exist
-app.use((req, res, next) => {
-  // Remove X-Forwarded headers
-  delete req.headers['x-forwarded-for'];
-  delete req.headers['x-forwarded-host'];
-  delete req.headers['x-forwarded-proto'];
-  next();
-});
-
-// Middleware
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// ✅ CORS Middleware - Allow all origins but control headers properly
 app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
+  origin: '*', 
+  methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Create a logs directory if it doesn't exist
-const fs = require('fs');
-const path = require('path');
-const logDir = path.join(__dirname, 'logs');
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true });
-}
+// ✅ Body Parsing Middleware
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-// Create rate limiter
+// ✅ Debug: Print Incoming Requests for Troubleshooting
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  if (req.method === 'POST') {
+    console.log('🔹 Request Body:', JSON.stringify(req.body));
+  }
+  next();
+});
+
+// ✅ Create Rate Limiter for Redemption API
 const redemptionLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 100, // requests per hour
   message: "Too many redemption attempts. Please try again later."
 });
-
-// Apply rate limiter to redemption endpoint
 app.use("/shopify/loyalty/redeem", redemptionLimiter);
 
-// Basic logging middleware
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  
-  if (req.method === 'POST') {
-    console.log('Request Body:', JSON.stringify(req.body));
-  }
-  next();
-});
-
-// Load Shopify Routes
+// ✅ Load Shopify Routes
 app.use("/shopify", shopifyRoutes);
 
-// Debug Environment Variables
+// ✅ Test Route - Useful for Checking Deployment
+app.get("/", (req, res) => {
+  res.json({ message: "🎉 Shopify Loyalty API is Running!" });
+});
+
+// ✅ Debug: Check if Environment Variables Are Loaded
 console.log("🔹 SHOPIFY_STORE_URL:", process.env.SHOPIFY_STORE_URL || "❌ Not Loaded");
 console.log("🔹 SHOPIFY_ACCESS_TOKEN:", process.env.SHOPIFY_ACCESS_TOKEN ? "Loaded ✅" : "❌ Not Loaded");
 
-// Start Server
+// ✅ Start Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
 
-// Minimal error handling middleware
+// ✅ Improved Error Handling Middleware
 app.use((err, req, res, next) => {
-  console.error('Unhandled Error:', err);
-  
+  console.error("❌ Unhandled Error:", err);
   res.status(500).json({
-    error: 'An unexpected error occurred',
-    message: err.message
+    error: "An unexpected error occurred",
+    message: err.message,
+    stack: process.env.NODE_ENV === "development" ? err.stack : "❌ Hidden in Production"
   });
+});
+app.get("/debug", (req, res) => {
+  res.json({ status: "✅ API is working!" });
 });
