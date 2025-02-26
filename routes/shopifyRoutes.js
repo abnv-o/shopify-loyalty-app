@@ -1,0 +1,76 @@
+const express = require("express");
+const {
+  handleOrderFulfillment,
+  handleOrderCancellation,
+  getCustomerLoyaltyPoints,
+  redeemLoyaltyPoints,
+  checkActiveDiscounts,
+  debugShopifyAppConfig
+} = require("../controllers/shopifyController");
+
+const router = express.Router();
+
+// Middleware to parse various request bodies
+router.use(express.urlencoded({ extended: true }));
+router.use(express.json());
+
+// Webhook Routes
+router.post("/webhook/order-fulfilled", handleOrderFulfillment);
+router.post("/webhook/order-canceled", handleOrderCancellation);
+
+// Customer Loyalty Points Routes
+router.get("/customer/:customerId/points", getCustomerLoyaltyPoints);
+
+// Loyalty Points Redemption Routes
+router.get("/loyalty/redeem", redeemLoyaltyPoints);
+router.post("/loyalty/redeem", redeemLoyaltyPoints);
+
+// Check active discounts
+router.get("/customer/:customerId/active-discounts", checkActiveDiscounts);
+
+// Shopify App Configuration Debug Endpoint
+router.get("/debug/app-config", debugShopifyAppConfig);
+
+// Test endpoint
+router.get("/test", (req, res) => {
+  console.log("✅ Test endpoint hit!");
+  res.header("Access-Control-Allow-Origin", "*");
+  res.status(200).send("Connection successful!");
+});
+
+// Debug info page
+router.get("/loyalty-info", (req, res) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Loyalty System Status</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .card { border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 4px; }
+        .success { color: green; }
+        .error { color: red; }
+      </style>
+    </head>
+    <body>
+      <h1>Loyalty System Status</h1>
+      <div class="card">
+        <h2>Server Time</h2>
+        <p>Current server time: ${new Date().toISOString()}</p>
+      </div>
+      <div class="card">
+        <h2>Environment</h2>
+        <p>SHOPIFY_STORE_URL: ${process.env.SHOPIFY_STORE_URL ? "Configured ✅" : "Not Configured ❌"}</p>
+        <p>SHOPIFY_ACCESS_TOKEN: ${process.env.SHOPIFY_ACCESS_TOKEN ? "Configured ✅" : "Not Configured ❌"}</p>
+      </div>
+      <div class="card">
+        <h2>System Status</h2>
+        <p class="success">System is operational ✅</p>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+module.exports = router;
