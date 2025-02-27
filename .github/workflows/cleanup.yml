@@ -1,0 +1,30 @@
+name: Scheduled Cleanup
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Every 5 minutes for expired codes
+    - cron: '0 0 * * *'    # Daily at midnight for used codes
+  workflow_dispatch:        # Allow manual triggering
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get current cron schedule
+        id: schedule
+        run: |
+          SCHEDULE=$(date +%H:%M)
+          echo "schedule=$SCHEDULE" >> $GITHUB_OUTPUT
+
+      - name: Cleanup expired codes
+        run: |
+          curl -s "https://${{ secrets.VERCEL_APP_URL }}/shopify/admin/cleanup-expired?key=${{ secrets.ADMIN_SECRET_KEY }}" \
+            -H "Content-Type: application/json" \
+            | jq .
+            
+      - name: Cleanup used codes (daily job only)
+        if: ${{ steps.schedule.outputs.schedule == '00:00' }}
+        run: |
+          curl -s "https://${{ secrets.VERCEL_APP_URL }}/shopify/admin/cleanup-used?key=${{ secrets.ADMIN_SECRET_KEY }}" \
+            -H "Content-Type: application/json" \
+            | jq .

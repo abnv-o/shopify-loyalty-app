@@ -1,5 +1,6 @@
 const express = require("express");
 const shopifyController = require("../controllers/shopify");
+const adminController = require('../controllers/shopify/adminController');
 
 const router = express.Router();
 
@@ -22,6 +23,17 @@ router.post("/loyalty/redeem", shopifyController.redeemLoyaltyPoints);
 
 // Check active discounts
 router.get("/customer/:customerId/active-discounts", shopifyController.checkActiveDiscounts);
+
+// Admin routes - protected by secret key
+router.get("/admin/cleanup-expired", 
+  adminController.verifyAdminKey, 
+  adminController.cleanupExpiredCodes
+);
+
+router.get("/admin/cleanup-used", 
+  adminController.verifyAdminKey, 
+  adminController.cleanupUsedCodes
+);
 
 
 
