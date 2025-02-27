@@ -53,18 +53,51 @@ async function storeDiscountCode(code, customerId, priceRuleId, expiresAt) {
  */
 async function markDiscountCodeAsUsed(code) {
   try {
+    console.log(`📝 Attempting to mark code as used: ${code}`);
+    
+    // First check if the code exists and is unused
+    const { data: existing, error: queryError } = await supabase
+      .from('discount_codes')
+      .select('id, code, status')
+      .eq('code', code)
+      .limit(1);
+      
+    if (queryError) {
+      console.error(`❌ Error querying discount code: ${queryError.message}`);
+      return false;
+    }
+    
+    if (!existing || existing.length === 0) {
+      console.log(`⚠️ Discount code not found in database: ${code}`);
+      return false;
+    }
+    
+    if (existing[0].status === 'used') {
+      console.log(`ℹ️ Discount code already marked as used: ${code}`);
+      return true; // Already in the desired state
+    }
+    
+    console.log(`🔄 Updating discount code ${code} status to 'used'`);
+    
+    // Update the discount code status
     const { data, error } = await supabase
       .from('discount_codes')
-      .update({ status: 'used', used_at: new Date().toISOString() })
+      .update({ 
+        status: 'used', 
+        used_at: new Date().toISOString() 
+      })
       .eq('code', code)
       .select();
 
-    if (error) throw error;
+    if (error) {
+      console.error(`❌ Error updating discount code status: ${error.message}`);
+      return false;
+    }
     
     console.log(`✅ Discount code marked as used: ${code}`);
     return true;
   } catch (error) {
-    console.error('❌ Error marking discount code as used:', error.message);
+    console.error(`❌ Unexpected error marking discount code as used: ${error.message}`);
     return false;
   }
 }

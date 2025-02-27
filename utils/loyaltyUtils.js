@@ -14,7 +14,7 @@ function generateDiscountCode(customerId, cartToken) {
     .digest('hex')
     .slice(0, 10);
   
-  return `PSK${timestamp}${hash}`.toUpperCase();
+  return `PSKLTY${timestamp}${hash}`.toUpperCase();
 }
 
 module.exports = {

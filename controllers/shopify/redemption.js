@@ -308,21 +308,58 @@ async function deleteShopifyDiscount(priceRuleId) {
  */
 async function handleDiscountCodeUsage(req, res) {
   try {
-    const { discount_code, order } = req.body;
+    console.log('📦 Received order webhook');
     
-    if (!discount_code || !discount_code.code) {
-      return res.status(400).json({ error: "Invalid webhook payload" });
+    // Get the order data from the webhook
+    const order = req.body;
+    
+    // Check if order has discount codes
+    if (!order.discount_codes || order.discount_codes.length === 0) {
+      console.log('ℹ️ Order does not contain any discount codes');
+      return res.status(200).json({ success: true, message: 'No discount codes to process' });
     }
     
-    // Mark the discount code as used in Supabase
+    console.log(`📋 Found ${order.discount_codes.length} discount codes in order #${order.order_number}`);
     const { markDiscountCodeAsUsed } = require('../../utils/supabaseClient');
-    await markDiscountCodeAsUsed(discount_code.code);
     
-    console.log(`✅ Discount code ${discount_code.code} marked as used for order ${order?.id || 'unknown'}`);
+    // Process each discount code in the order
+    const results = [];
+    for (const discount of order.discount_codes) {
+      const code = discount.code;
+      console.log(`🏷️ Processing discount code: ${code}`);
+      
+      try {
+        // Check if this is one of our loyalty discount codes (they start with PSKLTY)
+        if (!code.startsWith('PSKLTY')) {
+          console.log(`ℹ️ Skipping non-loyalty code: ${code}`);
+          continue;
+        }
+        
+        // Mark the discount code as used in Supabase
+        const success = await markDiscountCodeAsUsed(code);
+        
+        if (success) {
+          console.log(`✅ Successfully marked discount code ${code} as used`);
+          results.push({ code, success: true });
+        } else {
+          console.log(`❌ Failed to mark discount code ${code} as used`);
+          results.push({ code, success: false, error: 'Database update failed' });
+        }
+      } catch (codeError) {
+        console.error(`❌ Error processing discount code ${code}:`, codeError);
+        results.push({ code, success: false, error: codeError.message });
+      }
+    }
     
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Processed order discount codes',
+      order_id: order.id,
+      order_number: order.order_number,
+      results
+    });
   } catch (error) {
-    console.error("❌ Error handling discount code usage:", error);
+    console.error("❌ Error handling order webhook:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 }
