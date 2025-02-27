@@ -1,12 +1,5 @@
 const express = require("express");
-const {
-  handleOrderFulfillment,
-  handleOrderCancellation,
-  getCustomerLoyaltyPoints,
-  redeemLoyaltyPoints,
-  checkActiveDiscounts,
-  debugShopifyAppConfig
-} = require("../controllers/shopifyController");
+const shopifyController = require("../controllers/shopify");
 
 const router = express.Router();
 
@@ -15,21 +8,21 @@ router.use(express.urlencoded({ extended: true }));
 router.use(express.json());
 
 // Webhook Routes
-router.post("/webhook/order-fulfilled", handleOrderFulfillment);
-router.post("/webhook/order-canceled", handleOrderCancellation);
+router.post("/webhook/order-fulfilled", shopifyController.handleOrderFulfillment);
+router.post("/webhook/order-canceled", shopifyController.handleOrderCancellation);
 
 // Customer Loyalty Points Routes
-router.get("/customer/:customerId/points", getCustomerLoyaltyPoints);
+router.get("/customer/:customerId/points", shopifyController.getCustomerLoyaltyPoints);
 
 // Loyalty Points Redemption Routes
-router.get("/loyalty/redeem", redeemLoyaltyPoints);
-router.post("/loyalty/redeem", redeemLoyaltyPoints);
+router.get("/loyalty/redeem", shopifyController.redeemLoyaltyPoints);
+router.post("/loyalty/redeem", shopifyController.redeemLoyaltyPoints);
 
 // Check active discounts
-router.get("/customer/:customerId/active-discounts", checkActiveDiscounts);
+router.get("/customer/:customerId/active-discounts", shopifyController.checkActiveDiscounts);
 
 // Shopify App Configuration Debug Endpoint
-router.get("/debug/app-config", debugShopifyAppConfig);
+router.get("/debug/app-config", shopifyController.debugShopifyAppConfig);
 
 // Test endpoint
 router.get("/test", (req, res) => {
