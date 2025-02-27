@@ -1,9 +1,10 @@
+// controllers/shopify/redemption.js
 const axios = require("axios");
-const loyaltyUtils = require("../../utils/loyaltyUtils");
+const { generateDiscountCode } = require("../../utils/loyaltyUtils");
 const { getCustomerMetafields, updateCustomerPoints, SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN } = require('./metafields');
 const { handleResponse } = require('./utils');
 const { calculateMaxRedeemablePoints } = require('./pointsService');
-const { storeDiscountCode } = require('../../utils/supabaseClient');
+const { storeDiscountCode, supabase } = require('../../utils/supabaseClient');
 
 /**
  * Check if a customer has active discount codes
@@ -15,37 +16,46 @@ async function checkActiveDiscounts(req, res) {
   try {
     const { customerId } = req.params;
     
-    // First check our in-memory cache
-    const cachedRedemption = loyaltyUtils.hasActiveRedemption(customerId);
-    if (cachedRedemption) {
+    // Check directly in Supabase for active discounts
+    const { data, error } = await supabase
+      .from('discount_codes')
+      .select('code, expires_at')
+      .eq('customer_id', customerId)
+      .eq('status', 'unused')
+      .gt('expires_at', new Date().toISOString())
+      .limit(1);
+      
+    if (error) throw error;
+    
+    const hasActiveDiscount = data && data.length > 0;
+    
+    // If nothing in database, check Shopify API as backup
+    if (!hasActiveDiscount) {
+      const response = await axios.get(
+        `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules.json?limit=250`,
+        { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } }
+      );
+      
+      // Filter for active loyalty redemptions for this customer
+      const now = new Date().toISOString();
+      const activeRules = response.data.price_rules.filter(rule => 
+        rule.title.includes(`Customer:${customerId}`) && 
+        rule.starts_at <= now &&
+        rule.ends_at > now
+      );
+      
       return res.json({
-        hasActiveDiscount: true,
-        activeDiscountInfo: {
-          code: cachedRedemption.discountCode,
-          expiresAt: cachedRedemption.expiresAt
-        }
+        hasActiveDiscount: activeRules.length > 0,
+        activeDiscountCount: activeRules.length
       });
     }
     
-    // If nothing in cache, check Shopify API
-    const response = await axios.get(
-      `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules.json?limit=250`,
-      { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } }
-    );
-    
-    // Filter for active loyalty redemptions for this customer
-    const now = new Date().toISOString();
-    const activeRules = response.data.price_rules.filter(rule => 
-      rule.title.includes(`Customer:${customerId}`) && 
-      rule.starts_at <= now &&
-      rule.ends_at > now
-    );
-    
-    const hasActiveDiscount = activeRules.length > 0;
-    
     return res.json({
-      hasActiveDiscount,
-      activeDiscountCount: activeRules.length
+      hasActiveDiscount: true,
+      activeDiscountInfo: {
+        code: data[0].code,
+        expiresAt: data[0].expires_at
+      }
     });
   } catch (error) {
     console.error("Error checking active discounts:", error);
@@ -59,14 +69,14 @@ async function checkActiveDiscounts(req, res) {
  * @param {string} cartToken - Cart token
  * @param {number} pointsToRedeem - Number of points to redeem
  * @param {Date} expiresAt - Expiration date
- * @returns {Object} - Created discount info
+ * @returns {Promise<Object>} - Created discount info
  */
 async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expiresAt) {
   // Generate a discount code
-  const discountCode = loyaltyUtils.generateDiscountCode(customerId, cartToken);
+  const discountCode = generateDiscountCode(customerId, cartToken);
   
   try {
-    // Create the price rule in Shopify
+    // Create the price rule
     console.log("📝 Creating price rule in Shopify");
     const priceRuleResponse = await axios.post(
       `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules.json`,
@@ -77,11 +87,11 @@ async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expi
           target_selection: "all",
           allocation_method: "across",
           value_type: "fixed_amount",
-          value: `-${pointsToRedeem}`,
+          value: `-${pointsToRedeem}`, // 1 point = 1 INR discount
           customer_selection: "prerequisite",
           prerequisite_customer_ids: [customerId],
           prerequisite_subtotal_range: {
-            greater_than_or_equal_to: 2000
+            greater_than_or_equal_to: 2000 // Minimum order value
           },
           starts_at: new Date().toISOString(),
           ends_at: expiresAt.toISOString(),
@@ -94,7 +104,7 @@ async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expi
     
     const priceRuleId = priceRuleResponse.data.price_rule.id;
     
-    // Create the discount code in Shopify
+    // Create the discount code
     await axios.post(
       `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules/${priceRuleId}/discount_codes.json`,
       {
@@ -104,9 +114,6 @@ async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expi
       },
       { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } }
     );
-    
-    // Store the discount code in Supabase
-    await storeDiscountCode(discountCode, customerId, priceRuleId, expiresAt);
     
     return {
       discountCode,
@@ -161,13 +168,22 @@ async function redeemLoyaltyPoints(req, res) {
       return handleResponse(req, res, false, "Invalid order value");
     }
 
-    // Check if customer already has an active discount
-    const activeRedemption = loyaltyUtils.hasActiveRedemption(customerId);
-    if (activeRedemption) {
-      console.log("❌ Customer already has active redemption:", activeRedemption);
+    // Check if customer already has an active discount in Supabase
+    const { data: activeDiscounts, error: queryError } = await supabase
+      .from('discount_codes')
+      .select('code, expires_at')
+      .eq('customer_id', customerId)
+      .eq('status', 'unused')
+      .gt('expires_at', new Date().toISOString())
+      .limit(1);
+      
+    if (queryError) throw queryError;
+    
+    if (activeDiscounts && activeDiscounts.length > 0) {
+      console.log("❌ Customer already has active redemption:", activeDiscounts[0]);
       return handleResponse(req, res, false, "You already have an active discount code", {
-        existingCode: activeRedemption.discountCode,
-        expiresAt: activeRedemption.expiresAt
+        existingCode: activeDiscounts[0].code,
+        expiresAt: activeDiscounts[0].expires_at
       });
     }
 
@@ -206,24 +222,23 @@ async function redeemLoyaltyPoints(req, res) {
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + 15);
     
-    // Create the discount in Shopify
+    let discountCode, priceRuleId;
+    
     try {
-      const { discountCode } = await createShopifyDiscount(
+      // Create the discount in Shopify
+      const result = await createShopifyDiscount(
         customerId,
         cartToken,
         pointsToRedeem,
         expiresAt
       );
       
-      // Track this redemption
-      loyaltyUtils.trackRedemption(customerId, {
-        discountCode,
-        cartToken,
-        pointsRedeemed: pointsToRedeem,
-        createdAt: new Date().toISOString(),
-        expiresAt: expiresAt.toISOString()
-      });
-
+      discountCode = result.discountCode;
+      priceRuleId = result.priceRuleId;
+      
+      // Only after successful Shopify creation, store in Supabase
+      await storeDiscountCode(discountCode, customerId, priceRuleId, expiresAt);
+      
       // Deduct points from customer's account
       console.log(`💰 Updating customer points from ${currentPoints} to ${currentPoints - pointsToRedeem}`);
       
@@ -241,7 +256,21 @@ async function redeemLoyaltyPoints(req, res) {
         expiresAt: expiresAt.toISOString()
       });
     } catch (error) {
-      console.error("❌ Error creating discount:", error);
+      console.error("❌ Error during redemption:", error);
+      
+      // Cleanup: If we created a discount in Shopify but failed later, try to delete it
+      if (priceRuleId) {
+        try {
+          await axios.delete(
+            `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules/${priceRuleId}.json`,
+            { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } }
+          );
+          console.log(`✅ Cleaned up price rule ${priceRuleId} after error`);
+        } catch (cleanupError) {
+          console.error(`❌ Failed to clean up price rule ${priceRuleId}:`, cleanupError.message);
+        }
+      }
+      
       return handleResponse(req, res, false, "Failed to create discount code. Please try again.");
     }
   } catch (error) {
@@ -270,7 +299,6 @@ async function deleteShopifyDiscount(priceRuleId) {
     return false;
   }
 }
-
 
 /**
  * Handle discount code usage webhook from Shopify
