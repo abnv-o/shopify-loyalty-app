@@ -10,6 +10,8 @@ router.use(express.json());
 // Webhook Routes
 router.post("/webhook/order-fulfilled", shopifyController.handleOrderFulfillment);
 router.post("/webhook/order-canceled", shopifyController.handleOrderCancellation);
+// Webhook for discount code usage
+router.post("/webhook/discount-code-used", shopifyController.handleDiscountCodeUsage);
 
 // Customer Loyalty Points Routes
 router.get("/customer/:customerId/points", shopifyController.getCustomerLoyaltyPoints);
@@ -20,6 +22,8 @@ router.post("/loyalty/redeem", shopifyController.redeemLoyaltyPoints);
 
 // Check active discounts
 router.get("/customer/:customerId/active-discounts", shopifyController.checkActiveDiscounts);
+
+
 
 // Shopify App Configuration Debug Endpoint
 router.get("/debug/app-config", shopifyController.debugShopifyAppConfig);

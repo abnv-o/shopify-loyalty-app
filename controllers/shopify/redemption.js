@@ -3,7 +3,7 @@ const loyaltyUtils = require("../../utils/loyaltyUtils");
 const { getCustomerMetafields, updateCustomerPoints, SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN } = require('./metafields');
 const { handleResponse } = require('./utils');
 const { calculateMaxRedeemablePoints } = require('./pointsService');
-
+const { storeDiscountCode } = require('../../utils/supabaseClient');
 /**
  * Check if a customer has active discount codes
  * @param {Object} req - Express request object
@@ -65,7 +65,7 @@ async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expi
   const discountCode = loyaltyUtils.generateDiscountCode(customerId, cartToken);
   
   try {
-    // Create the price rule
+    // Create the price rule in Shopify
     console.log("📝 Creating price rule in Shopify");
     const priceRuleResponse = await axios.post(
       `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules.json`,
@@ -76,11 +76,11 @@ async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expi
           target_selection: "all",
           allocation_method: "across",
           value_type: "fixed_amount",
-          value: `-${pointsToRedeem}`, // 1 point = 1 INR discount
+          value: `-${pointsToRedeem}`,
           customer_selection: "prerequisite",
           prerequisite_customer_ids: [customerId],
           prerequisite_subtotal_range: {
-            greater_than_or_equal_to: 2000 // Minimum order value
+            greater_than_or_equal_to: 2000
           },
           starts_at: new Date().toISOString(),
           ends_at: expiresAt.toISOString(),
@@ -93,7 +93,7 @@ async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expi
     
     const priceRuleId = priceRuleResponse.data.price_rule.id;
     
-    // Create the discount code
+    // Create the discount code in Shopify
     await axios.post(
       `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules/${priceRuleId}/discount_codes.json`,
       {
@@ -103,6 +103,9 @@ async function createShopifyDiscount(customerId, cartToken, pointsToRedeem, expi
       },
       { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } }
     );
+    
+    // Store the discount code in Supabase
+    await storeDiscountCode(discountCode, customerId, priceRuleId, expiresAt);
     
     return {
       discountCode,
@@ -247,7 +250,57 @@ async function redeemLoyaltyPoints(req, res) {
   }
 }
 
+/**
+ * Delete a discount code from Shopify
+ * @param {string} priceRuleId - Shopify price rule ID
+ * @returns {Promise<boolean>} - Success status
+ */
+async function deleteShopifyDiscount(priceRuleId) {
+  try {
+    await axios.delete(
+      `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules/${priceRuleId}.json`,
+      { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } }
+    );
+    
+    console.log(`✅ Deleted price rule ${priceRuleId} from Shopify`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Error deleting price rule ${priceRuleId}:`, error.message);
+    return false;
+  }
+}
+
+
+/**
+ * Handle discount code usage webhook from Shopify
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @returns {Object} - Express response
+ */
+async function handleDiscountCodeUsage(req, res) {
+  try {
+    const { discount_code, order } = req.body;
+    
+    if (!discount_code || !discount_code.code) {
+      return res.status(400).json({ error: "Invalid webhook payload" });
+    }
+    
+    // Mark the discount code as used in Supabase
+    const { markDiscountCodeAsUsed } = require('../../utils/supabaseClient');
+    await markDiscountCodeAsUsed(discount_code.code);
+    
+    console.log(`✅ Discount code ${discount_code.code} marked as used for order ${order?.id || 'unknown'}`);
+    
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("❌ Error handling discount code usage:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+}
+
 module.exports = {
   checkActiveDiscounts,
-  redeemLoyaltyPoints
+  redeemLoyaltyPoints,
+  deleteShopifyDiscount,
+  handleDiscountCodeUsage
 };

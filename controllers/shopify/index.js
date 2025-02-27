@@ -18,7 +18,10 @@ module.exports = {
   // Redemption and discounts
   redeemLoyaltyPoints: redemption.redeemLoyaltyPoints,
   checkActiveDiscounts: redemption.checkActiveDiscounts,
+  handleDiscountCodeUsage: redemption.handleDiscountCodeUsage,
   
   // Debug and configuration
-  debugShopifyAppConfig: debug.debugShopifyAppConfig
+  debugShopifyAppConfig: debug.debugShopifyAppConfig,
+
+  
 };
