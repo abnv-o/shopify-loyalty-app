@@ -1,75 +1,125 @@
-const { createClient } = require('@supabase/supabase-js');
+// controllers/shopify/adminController.js
+const { supabase } = require('../../utils/supabaseClient');
+const axios = require('axios');
 
-// Initialize Supabase client
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+// Environment variables
+const SHOPIFY_STORE_URL = process.env.SHOPIFY_STORE_URL;
+const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY;
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error('❌ Supabase environment variables missing');
+// Verify admin secret key
+function verifyAdminKey(req, res, next) {
+  const providedKey = req.query.key || '';
+  if (providedKey !== ADMIN_SECRET_KEY) {
+    return res.status(403).json({ error: "Unauthorized access" });
+  }
+  next();
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-/**
- * Store a discount code in Supabase
- * @param {string} code - Discount code
- * @param {string} customerId - Shopify customer ID
- * @param {string} priceRuleId - Shopify price rule ID
- * @param {Date} expiresAt - Expiration date
- * @returns {Promise<Object>} - Inserted record
- */
-async function storeDiscountCode(code, customerId, priceRuleId, expiresAt) {
+// Clean up expired discount codes
+async function cleanupExpiredCodes(req, res) {
   try {
-    const { data, error } = await supabase
+    console.log('🔍 Running cleanup for expired discount codes');
+    
+    // Get expired unused codes
+    const { data: expiredCodes, error } = await supabase
       .from('discount_codes')
-      .insert([
-        {
-          code,
-          customer_id: customerId,
-          price_rule_id: priceRuleId,
-          created_at: new Date().toISOString(),
-          expires_at: expiresAt.toISOString(),
-          status: 'unused'
-        }
-      ])
-      .select();
-
+      .select('*')
+      .eq('status', 'unused')
+      .lt('expires_at', new Date().toISOString());
+      
     if (error) throw error;
     
-    console.log(`✅ Discount code stored in Supabase: ${code}`);
-    return data[0];
+    console.log(`📊 Found ${expiredCodes.length} expired discount codes`);
+    
+    // Process each expired code
+    const results = [];
+    for (const code of expiredCodes) {
+      try {
+        // Delete from Shopify
+        await axios.delete(
+          `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules/${code.price_rule_id}.json`,
+          { headers: { "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN } }
+        );
+        
+        // Delete from Supabase
+        const { error: deleteError } = await supabase
+          .from('discount_codes')
+          .delete()
+          .eq('id', code.id);
+          
+        if (deleteError) throw deleteError;
+        
+        console.log(`✅ Deleted expired code: ${code.code}`);
+        results.push({ code: code.code, success: true });
+      } catch (codeError) {
+        console.error(`❌ Error processing expired code ${code.code}:`, codeError.message);
+        results.push({ code: code.code, success: false, error: codeError.message });
+      }
+    }
+    
+    console.log('✅ Expired codes cleanup completed');
+    return res.json({ 
+      success: true, 
+      processed: expiredCodes.length,
+      results 
+    });
   } catch (error) {
-    console.error('❌ Error storing discount code in Supabase:', error.message);
-    // Continue execution even if Supabase storage fails
-    return null;
+    console.error('❌ Error in expired codes cleanup:', error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 }
 
-/**
- * Mark a discount code as used
- * @param {string} code - Discount code
- * @returns {Promise<boolean>} - Success status
- */
-async function markDiscountCodeAsUsed(code) {
+// Clean up used discount codes older than 24 hours
+async function cleanupUsedCodes(req, res) {
   try {
-    const { data, error } = await supabase
+    console.log('🔍 Running cleanup for used discount codes');
+    
+    // Calculate date 24 hours ago
+    const yesterday = new Date();
+    yesterday.setHours(yesterday.getHours() - 24);
+    
+    // Get used codes older than 24 hours
+    const { data: oldUsedCodes, error } = await supabase
       .from('discount_codes')
-      .update({ status: 'used', used_at: new Date().toISOString() })
-      .eq('code', code)
-      .select();
-
+      .select('*')
+      .eq('status', 'used')
+      .lt('used_at', yesterday.toISOString());
+      
     if (error) throw error;
     
-    console.log(`✅ Discount code marked as used: ${code}`);
-    return true;
+    console.log(`📊 Found ${oldUsedCodes.length} used discount codes older than 24 hours`);
+    
+    // Delete the old used codes
+    if (oldUsedCodes.length > 0) {
+      const { error: deleteError } = await supabase
+        .from('discount_codes')
+        .delete()
+        .eq('status', 'used')
+        .lt('used_at', yesterday.toISOString());
+        
+      if (deleteError) throw deleteError;
+    }
+    
+    console.log('✅ Used codes cleanup completed');
+    return res.json({ 
+      success: true, 
+      deleted: oldUsedCodes.length 
+    });
   } catch (error) {
-    console.error('❌ Error marking discount code as used:', error.message);
-    return false;
+    console.error('❌ Error in used codes cleanup:', error.message);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 }
 
 module.exports = {
-  supabase,
-  storeDiscountCode,
-  markDiscountCodeAsUsed
+  verifyAdminKey,
+  cleanupExpiredCodes,
+  cleanupUsedCodes
 };

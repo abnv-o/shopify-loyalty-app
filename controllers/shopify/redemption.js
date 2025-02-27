@@ -4,6 +4,7 @@ const { getCustomerMetafields, updateCustomerPoints, SHOPIFY_STORE_URL, SHOPIFY_
 const { handleResponse } = require('./utils');
 const { calculateMaxRedeemablePoints } = require('./pointsService');
 const { storeDiscountCode } = require('../../utils/supabaseClient');
+
 /**
  * Check if a customer has active discount codes
  * @param {Object} req - Express request object
