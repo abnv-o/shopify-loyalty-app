@@ -4,7 +4,7 @@ const { generateDiscountCode } = require("../../utils/loyaltyUtils");
 const { getCustomerMetafields, updateCustomerPoints, SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN } = require('./metafields');
 const { handleResponse } = require('./utils');
 const { calculateMaxRedeemablePoints } = require('./pointsService');
-const { storeDiscountCode, supabase } = require('../../utils/supabaseClient');
+const { storeDiscountCode, getActiveDiscounts, markDiscountCodeAsUsed } = require('../../utils/supabaseClient');
 
 /**
  * Check if a customer has active discount codes
@@ -16,20 +16,12 @@ async function checkActiveDiscounts(req, res) {
   try {
     const { customerId } = req.params;
     
-    // Check directly in Supabase for active discounts
-    const { data, error } = await supabase
-      .from('discount_codes')
-      .select('code, expires_at')
-      .eq('customer_id', customerId)
-      .eq('status', 'unused')
-      .gt('expires_at', new Date().toISOString())
-      .limit(1);
-      
-    if (error) throw error;
+    // Check in-memory storage for active discounts
+    const activeDiscounts = await getActiveDiscounts(customerId);
     
-    const hasActiveDiscount = data && data.length > 0;
+    const hasActiveDiscount = activeDiscounts.length > 0;
     
-    // If nothing in database, check Shopify API as backup
+    // If nothing in memory, check Shopify API as backup
     if (!hasActiveDiscount) {
       const response = await axios.get(
         `https://${SHOPIFY_STORE_URL}/admin/api/2023-10/price_rules.json?limit=250`,
@@ -53,8 +45,8 @@ async function checkActiveDiscounts(req, res) {
     return res.json({
       hasActiveDiscount: true,
       activeDiscountInfo: {
-        code: data[0].code,
-        expiresAt: data[0].expires_at
+        code: activeDiscounts[0].code,
+        expiresAt: activeDiscounts[0].expires_at
       }
     });
   } catch (error) {
@@ -168,18 +160,10 @@ async function redeemLoyaltyPoints(req, res) {
       return handleResponse(req, res, false, "Invalid order value");
     }
 
-    // Check if customer already has an active discount in Supabase
-    const { data: activeDiscounts, error: queryError } = await supabase
-      .from('discount_codes')
-      .select('code, expires_at')
-      .eq('customer_id', customerId)
-      .eq('status', 'unused')
-      .gt('expires_at', new Date().toISOString())
-      .limit(1);
-      
-    if (queryError) throw queryError;
+    // Check if customer already has an active discount in memory
+    const activeDiscounts = await getActiveDiscounts(customerId);
     
-    if (activeDiscounts && activeDiscounts.length > 0) {
+    if (activeDiscounts.length > 0) {
       console.log("❌ Customer already has active redemption:", activeDiscounts[0]);
       return handleResponse(req, res, false, "You already have an active discount code", {
         existingCode: activeDiscounts[0].code,
@@ -236,7 +220,7 @@ async function redeemLoyaltyPoints(req, res) {
       discountCode = result.discountCode;
       priceRuleId = result.priceRuleId;
       
-      // Only after successful Shopify creation, store in Supabase
+      // Only after successful Shopify creation, store in memory
       await storeDiscountCode(discountCode, customerId, priceRuleId, expiresAt);
       
       // Deduct points from customer's account
@@ -320,7 +304,6 @@ async function handleDiscountCodeUsage(req, res) {
     }
     
     console.log(`📋 Found ${order.discount_codes.length} discount codes in order #${order.order_number}`);
-    const { markDiscountCodeAsUsed } = require('../../utils/supabaseClient');
     
     // Process each discount code in the order
     const results = [];
@@ -335,7 +318,7 @@ async function handleDiscountCodeUsage(req, res) {
           continue;
         }
         
-        // Mark the discount code as used in Supabase
+        // Mark the discount code as used in memory
         const success = await markDiscountCodeAsUsed(code);
         
         if (success) {
@@ -343,7 +326,7 @@ async function handleDiscountCodeUsage(req, res) {
           results.push({ code, success: true });
         } else {
           console.log(`❌ Failed to mark discount code ${code} as used`);
-          results.push({ code, success: false, error: 'Database update failed' });
+          results.push({ code, success: false, error: 'Memory update failed' });
         }
       } catch (codeError) {
         console.error(`❌ Error processing discount code ${code}:`, codeError);

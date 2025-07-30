@@ -76,33 +76,11 @@ router.get("/loyalty-info", (req, res) => {
       <div class="card">
         <h2>System Status</h2>
         <p class="success">System is operational ✅</p>
+        <p><strong>Storage:</strong> In-memory (no database required)</p>
       </div>
     </body>
     </html>
   `);
-});
-
-
-// Add this route temporarily to shopifyRoutes.js
-router.get("/test/supabase", async (req, res) => {
-  try {
-    const { supabase } = require('../utils/supabaseClient');
-    const { data, error } = await supabase.from('discount_codes').select('count');
-    
-    if (error) throw error;
-    
-    res.json({ 
-      success: true, 
-      message: "Supabase connection successful", 
-      count: data.length > 0 ? data[0].count : 0 
-    });
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      message: "Supabase connection failed", 
-      error: error.message 
-    });
-  }
 });
 
 module.exports = router;

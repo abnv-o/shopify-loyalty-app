@@ -1,19 +1,11 @@
-// utils/supabaseClient.js
-const { createClient } = require('@supabase/supabase-js');
+// utils/supabaseClient.js - Database-free version
+// In-memory storage for discount codes (resets on server restart)
 
-// Initialize Supabase client - ONLY ONCE
-console.log('Initializing Supabase client');
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error('❌ Supabase environment variables missing');
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
+// In-memory storage
+const discountCodes = new Map();
 
 /**
- * Store a discount code in Supabase
+ * Store a discount code in memory
  * @param {string} code - Discount code
  * @param {string} customerId - Shopify customer ID
  * @param {string} priceRuleId - Shopify price rule ID
@@ -22,26 +14,22 @@ const supabase = createClient(supabaseUrl, supabaseKey);
  */
 async function storeDiscountCode(code, customerId, priceRuleId, expiresAt) {
   try {
-    const { data, error } = await supabase
-      .from('discount_codes')
-      .insert([
-        {
-          code,
-          customer_id: customerId,
-          price_rule_id: priceRuleId,
-          expires_at: expiresAt.toISOString(),
-          status: 'unused'
-        }
-      ])
-      .select();
-
-    if (error) throw error;
+    const record = {
+      id: Date.now().toString(),
+      code,
+      customer_id: customerId,
+      price_rule_id: priceRuleId,
+      expires_at: expiresAt.toISOString(),
+      status: 'unused',
+      created_at: new Date().toISOString()
+    };
     
-    console.log(`✅ Discount code stored in Supabase: ${code}`);
-    return data[0];
+    discountCodes.set(code, record);
+    
+    console.log(`✅ Discount code stored in memory: ${code}`);
+    return record;
   } catch (error) {
-    console.error('❌ Error storing discount code in Supabase:', error.message);
-    // Continue execution even if Supabase storage fails
+    console.error('❌ Error storing discount code in memory:', error.message);
     return null;
   }
 }
@@ -55,24 +43,14 @@ async function markDiscountCodeAsUsed(code) {
   try {
     console.log(`📝 Attempting to mark code as used: ${code}`);
     
-    // First check if the code exists and is unused
-    const { data: existing, error: queryError } = await supabase
-      .from('discount_codes')
-      .select('id, code, status')
-      .eq('code', code)
-      .limit(1);
-      
-    if (queryError) {
-      console.error(`❌ Error querying discount code: ${queryError.message}`);
+    const record = discountCodes.get(code);
+    
+    if (!record) {
+      console.log(`⚠️ Discount code not found in memory: ${code}`);
       return false;
     }
     
-    if (!existing || existing.length === 0) {
-      console.log(`⚠️ Discount code not found in database: ${code}`);
-      return false;
-    }
-    
-    if (existing[0].status === 'used') {
+    if (record.status === 'used') {
       console.log(`ℹ️ Discount code already marked as used: ${code}`);
       return true; // Already in the desired state
     }
@@ -80,19 +58,9 @@ async function markDiscountCodeAsUsed(code) {
     console.log(`🔄 Updating discount code ${code} status to 'used'`);
     
     // Update the discount code status
-    const { data, error } = await supabase
-      .from('discount_codes')
-      .update({ 
-        status: 'used', 
-        used_at: new Date().toISOString() 
-      })
-      .eq('code', code)
-      .select();
-
-    if (error) {
-      console.error(`❌ Error updating discount code status: ${error.message}`);
-      return false;
-    }
+    record.status = 'used';
+    record.used_at = new Date().toISOString();
+    discountCodes.set(code, record);
     
     console.log(`✅ Discount code marked as used: ${code}`);
     return true;
@@ -102,8 +70,93 @@ async function markDiscountCodeAsUsed(code) {
   }
 }
 
+/**
+ * Check if customer has active discount codes
+ * @param {string} customerId - Customer ID
+ * @returns {Promise<Array>} - Active discount codes
+ */
+async function getActiveDiscounts(customerId) {
+  try {
+    const now = new Date().toISOString();
+    const activeCodes = [];
+    
+    for (const [code, record] of discountCodes.entries()) {
+      if (record.customer_id === customerId && 
+          record.status === 'unused' && 
+          record.expires_at > now) {
+        activeCodes.push(record);
+      }
+    }
+    
+    return activeCodes;
+  } catch (error) {
+    console.error('❌ Error checking active discounts:', error.message);
+    return [];
+  }
+}
+
+/**
+ * Clean up expired codes
+ * @returns {Promise<number>} - Number of codes cleaned up
+ */
+async function cleanupExpiredCodes() {
+  try {
+    const now = new Date().toISOString();
+    let cleanedCount = 0;
+    
+    for (const [code, record] of discountCodes.entries()) {
+      if (record.status === 'unused' && record.expires_at < now) {
+        discountCodes.delete(code);
+        cleanedCount++;
+      }
+    }
+    
+    console.log(`✅ Cleaned up ${cleanedCount} expired codes`);
+    return cleanedCount;
+  } catch (error) {
+    console.error('❌ Error cleaning up expired codes:', error.message);
+    return 0;
+  }
+}
+
+// Mock supabase object for compatibility
+const supabase = {
+  from: (table) => ({
+    select: () => ({
+      eq: (field, value) => ({
+        eq: (field2, value2) => ({
+          gt: (field3, value3) => ({
+            limit: (limit) => {
+              if (table === 'discount_codes' && field === 'customer_id') {
+                return getActiveDiscounts(value).then(codes => ({
+                  data: codes.slice(0, limit),
+                  error: null
+                }));
+              }
+              return Promise.resolve({ data: [], error: null });
+            }
+          })
+        })
+      })
+    }),
+    insert: () => ({
+      select: () => Promise.resolve({ data: [], error: null })
+    }),
+    update: () => ({
+      eq: () => ({
+        select: () => Promise.resolve({ data: [], error: null })
+      })
+    }),
+    delete: () => ({
+      eq: () => Promise.resolve({ error: null })
+    })
+  })
+};
+
 module.exports = {
   supabase,
   storeDiscountCode,
-  markDiscountCodeAsUsed
+  markDiscountCodeAsUsed,
+  getActiveDiscounts,
+  cleanupExpiredCodes
 };
